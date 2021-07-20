@@ -6,8 +6,8 @@ from ortools.constraint_solver import pywrapcp
 # GLOBAL VARIABLES
 field_width = 100 # Customer location has x-coordinate in (0, field_width)
 field_height = 100 # Customer location has y-coordinate in (0, field_height)
-depot_x = 50 # Depot x-coordinate
-depot_y = 50 # Depot y-coordinate
+#depot_x = 50 # Depot x-coordinate
+#depot_y = 50 # Depot y-coordinate
 
 #---------------------------------------------------------------------------------
 
@@ -239,10 +239,10 @@ def optimize(inst, capacity):
 def solve_SDVRP(inst, capacity):
     """Creates equivalent demand/location instance with unit demand and solves the VRP with splittable demands"""
     # Create equivalent instance with unit demand customers
-    split_xlocs = [[depot_x]] + [[inst.xlocs[i]] * inst.demands[i] for i in range(1, len(inst.demands))]
+    split_xlocs = [[inst.xlocs[0]]] + [[inst.xlocs[i]] * inst.demands[i] for i in range(1, len(inst.demands))]
     split_xlocs = [v for sublist in split_xlocs for v in sublist]
 
-    split_ylocs = [[depot_y]] + [[inst.ylocs[i]] * inst.demands[i] for i in range(1, len(inst.demands))]
+    split_ylocs = [[inst.xlocs[0]]] + [[inst.ylocs[i]] * inst.demands[i] for i in range(1, len(inst.demands))]
     split_ylocs = [v for sublist in split_ylocs for v in sublist]
 
     split_demands = [[0]] + [[1] * inst.demands[i] for i in range(1, len(inst.demands))]
@@ -285,48 +285,49 @@ def get_primary_routes(inst, route_size):
 def get_extended_routes(inst, route_size, overlap_size):
     """Splits customer sequnce into segments of 'route_size + overlap_size' number of customers, where adjacent
     segments SHARE overlap_size number of customers. Requires that the number of customers is evenly divisible by route_size."""
-
-    assert inst.size % route_size == 0, "The number of customers must be evenly divisible by primary route size."
+    
+    assert inst.size%route_size == 0, "The number of customers must be evenly divisible by primary route size."
     tour = inst.tour[1:]
     routes = []
-    for i in range(0, len(tour), route_size):
-        new_route = tour[i:i + route_size + overlap_size] # note: subsetting for the last route ends with final customer
+    for i in range(0,len(tour),route_size):
+        new_route = tour[i:i+route_size+overlap_size] # note: for the last route, subsetting ends with final customer
         routes.append(new_route)
     return routes
 
 
 #---------------------------------------------------------------------------------
 
-def create_full_trips(inst, route_list, capacity, demand_filled=None):
+def create_full_trips(inst, route_list, capacity, demand_filled = None):
     """Splits a sequence of customers into individual trips. Returns a list of lists."""
-
-    assert type(route_list[0]) == list, "route_list must be a list of lists (routes)"
+    
+    assert type(route_list[0]) == list, "route_list must be a list of lists (routes)."
 
     # Dictionary for tracking remaining demand filled at all customers
-    remaining_demand = dict([(inst.tour[i], inst.demands[inst.tour[i]]) for i in range(1, len(inst.tour))])
+    remaining_demand = dict([(inst.tour[i],inst.demands[inst.tour[i]]) for i in range(1,len(inst.tour))])
 
     segments = []
     for m in range(len(route_list)):
         i = 0
-        seg_dict = {}  # demand filled on current trip
-        vehicle_dict = dict(
-            [(inst.tour[i], 0) for i in range(1, len(inst.tour))])  # total demand filled by vehicle on this route
+        seg_dict = {} # demand filled on current trip
+        vehicle_dict = dict([(inst.tour[i],0) for i in range(1,len(inst.tour))]) # total demand filled by vehicle on this route
         while i < len(route_list[m]):
             cust = route_list[m][i]
             for d in range(inst.demands[cust]):
-
+                #print(dict([(c,vehicle_dict[c]) for c in vehicle_dict if vehicle_dict[c]!=0]))
+                #print(dict([(c,seg_dict[c]) for c in seg_dict if seg_dict[c]!=0]))
+                
                 if demand_filled != None and sum(vehicle_dict.values()) == demand_filled[m]:
                     # Route's vehicle achieved its predetermined workload (if applicable)
                     # Force to end this route and move to next
                     i = len(route_list[m])
                     break
-
+                    
                 elif sum(remaining_demand[c] for c in route_list[m]) == 0:
                     # Route is completed
                     # Force to end this route and move to next
                     i = len(route_list[m])
                     break
-
+                
                 elif sum(seg_dict.values()) == capacity:
                     # Vehicle is at capacity
                     # End current trip, and begin a new trip within this route
@@ -334,19 +335,19 @@ def create_full_trips(inst, route_list, capacity, demand_filled=None):
                     seg_dict = {cust: 1}
                     vehicle_dict[cust] += 1
                     remaining_demand[cust] -= 1
-
+                    
                 elif remaining_demand[cust] > 0:
                     if cust not in seg_dict:
                         # Begin service
-                        seg_dict[cust] = 1
+                        seg_dict[cust] = 1 
                     else:
                         # Continue service
                         seg_dict[cust] += 1
                     vehicle_dict[cust] += 1
                     remaining_demand[cust] -= 1
-
-            i += 1  # Moves to next customer
-
+                
+            i+=1 # Moves to next customer
+        
         # Append route's last segment
         segments.append(list(seg_dict))
 
@@ -451,6 +452,47 @@ def implement_k_overlapped_alg(inst, primary_routes, extended_routes, capacity, 
     return segments
 
 
+def implement_k_overlapped_alg_closed(demand_instance, primary_routes, extended_routes, capacity, route_size, overlap_size):
+    """Closed chain implemetation for flexible routing"""
+
+    # Get customer instance
+    inst = demand_instance
+    tour = inst.tour
+    # Set current tour and cumulative cost over all demand instances as best so far
+    # Note: cumulative cost yields same tour ranking as average cost across demand instances
+    best_segments = implement_k_overlapped_alg(inst, primary_routes, extended_routes, capacity, route_size, overlap_size)
+    lowest_cumul_cost = sum(get_total_cost(inst, seg) for seg in best_segments)
+    #print('Initial Routes: {}, Cost: {}'.format(best_routes, lowest_cumul_cost.round(2)))
+
+    # Copy of tour (for rotating below)
+    
+    primary_routes_to_rotate = primary_routes
+    extended_routes_to_rotate = extended_routes
+
+    # Loop over all customers
+    for c in range(len(primary_routes)-1):
+
+        # Rotate primary and extended routes
+        tour = tour[0:1] + tour[route_size+1:] + tour[1:route_size+1]
+        inst.update_tour(tour)
+        primary_routes_to_rotate = get_primary_routes(inst, route_size)
+        extended_routes_to_rotate = get_extended_routes(inst, route_size, overlap_size)
+        tour_cost = 0
+        
+        # Get cumulative cost over all demand instances
+        segments = implement_k_overlapped_alg(inst, primary_routes_to_rotate, extended_routes_to_rotate, capacity, route_size,
+                                                overlap_size)
+        for seg in segments:
+            tour_cost += get_total_cost(inst, seg)
+        #print('Candidate Routes: {}, Cost: {}'.format(extended_routes_to_rotate, tour_cost.round(2)))
+        if tour_cost < lowest_cumul_cost:
+            # Set as new best routes and cost
+            best_segments = segments
+            lowest_cumul_cost = tour_cost
+            #print('--> NEW BEST ROUTES: {}, COST: {}'.format(extended_routes_to_rotate, lowest_cumul_cost.round(2)))
+    
+    return best_segments
+
 #---------------------------------------------------------------------------------
 
 def create_instances(scenario, num_cust, cust_sims, dem_sims):
@@ -459,6 +501,9 @@ def create_instances(scenario, num_cust, cust_sims, dem_sims):
     np.random.seed(1)
 
     def gen_new_instance(num_cust, scenario):
+        # Randomly generate depot locations
+        depot_x = field_width * np.random.random(1)[0] # Depot x-coordinate
+        depot_y = field_height * np.random.random(1)[0] # Depot y-coordinate
 
         # Generate customer locations
         new_xlocs = field_width * np.random.random(num_cust)  # x coordinates of all customers
@@ -552,3 +597,6 @@ def set_best_tours(demand_instances, primary_routes, extended_routes, capacity, 
     for inst in demand_instances:
         inst.update_tour(best_tour)
     return
+
+
+
